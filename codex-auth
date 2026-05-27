@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+AUTH_DIR="$CODEX_HOME/auth.d"
+ACTIVE_AUTH="$CODEX_HOME/auth.json"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  codex-auth save <name>    Save current auth as <name> and switch to it
+  codex-auth list           List saved auth profiles, storage paths, and [current]
+  codex-auth use <name>     Switch to saved auth profile <name>
+  codex-auth next           Switch to the next saved auth profile
+  codex-auth remove <name>  Remove a saved auth profile, refusing if current
+EOF
+}
+
+die() {
+  printf 'codex-auth: %s\n' "$*" >&2
+  exit 1
+}
+
+validate_name() {
+  local name="$1"
+  if [[ ! "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    die "invalid profile name '$name' (use letters, numbers, '.', '_', or '-', starting with a letter or number)"
+  fi
+}
+
+profile_path() {
+  printf '%s/%s.json\n' "$AUTH_DIR" "$1"
+}
+
+ensure_auth_dir() {
+  mkdir -p "$AUTH_DIR"
+  chmod 700 "$AUTH_DIR"
+}
+
+profile_names() {
+  [[ -d "$AUTH_DIR" ]] || return 0
+  find "$AUTH_DIR" -maxdepth 1 -type f -name '*.json' -printf '%f\n' \
+    | sed 's/\.json$//' \
+    | sort
+}
+
+require_profile() {
+  local name="$1"
+  local path
+  path="$(profile_path "$name")"
+  [[ -f "$path" ]] || die "saved auth profile '$name' does not exist"
+}
+
+resolved_path() {
+  readlink -f -- "$1" 2>/dev/null || true
+}
+
+current_profile() {
+  local active_resolved profile path path_resolved
+  active_resolved="$(resolved_path "$ACTIVE_AUTH")"
+  [[ -n "$active_resolved" ]] || return 1
+
+  while IFS= read -r profile; do
+    [[ -n "$profile" ]] || continue
+    path="$(profile_path "$profile")"
+    path_resolved="$(resolved_path "$path")"
+    if [[ -n "$path_resolved" && "$path_resolved" == "$active_resolved" ]]; then
+      printf '%s\n' "$profile"
+      return 0
+    fi
+  done < <(profile_names)
+
+  return 1
+}
+
+refuse_unmanaged_active() {
+  if [[ -e "$ACTIVE_AUTH" && ! -L "$ACTIVE_AUTH" ]]; then
+    die "auth.json is an unmanaged regular file; run 'codex-auth save <name>' before switching so it is not overwritten"
+  fi
+}
+
+switch_to_profile() {
+  local name="$1"
+  local tmp_link="$CODEX_HOME/.auth.json.$$.$RANDOM.tmp"
+
+  ln -s "auth.d/$name.json" "$tmp_link"
+  mv -Tf "$tmp_link" "$ACTIVE_AUTH"
+}
+
+cmd_save() {
+  [[ $# -eq 1 ]] || die "save requires a profile name"
+  local name="$1"
+  local dest tmp
+  validate_name "$name"
+  ensure_auth_dir
+  dest="$(profile_path "$name")"
+  [[ ! -e "$dest" ]] || die "saved auth profile '$name' already exists"
+  [[ -f "$ACTIVE_AUTH" ]] || die "current auth.json does not exist or is not a file; run 'codex login' first"
+
+  tmp="$(mktemp "$AUTH_DIR/.$name.XXXXXX")"
+  cp -L -- "$ACTIVE_AUTH" "$tmp"
+  chmod 600 "$tmp"
+  mv -T "$tmp" "$dest"
+  switch_to_profile "$name"
+  printf "Saved and switched Codex auth to '%s'.\n" "$name"
+}
+
+cmd_list() {
+  local current found=false profile path
+  current="$(current_profile || true)"
+
+  while IFS= read -r profile; do
+    [[ -n "$profile" ]] || continue
+    found=true
+    path="$(profile_path "$profile")"
+    if [[ "$profile" == "$current" ]]; then
+      printf '%s [current] %s\n' "$profile" "$path"
+    else
+      printf '%s %s\n' "$profile" "$path"
+    fi
+  done < <(profile_names)
+
+  if [[ "$found" == false ]]; then
+    printf 'No saved auth profiles.\n'
+  fi
+}
+
+cmd_use() {
+  [[ $# -eq 1 ]] || die "use requires a profile name"
+  local name="$1"
+  validate_name "$name"
+  require_profile "$name"
+  refuse_unmanaged_active
+  switch_to_profile "$name"
+  printf "Switched Codex auth to '%s'.\n" "$name"
+}
+
+cmd_next() {
+  local profiles=()
+  mapfile -t profiles < <(profile_names)
+  ((${#profiles[@]} > 0)) || die "no saved auth profiles"
+  refuse_unmanaged_active
+
+  local current target i
+  current="$(current_profile || true)"
+  target="${profiles[0]}"
+  if [[ -n "$current" ]]; then
+    for i in "${!profiles[@]}"; do
+      if [[ "${profiles[$i]}" == "$current" ]]; then
+        target="${profiles[$(((i + 1) % ${#profiles[@]}))]}"
+        break
+      fi
+    done
+  fi
+
+  switch_to_profile "$target"
+  printf "Switched Codex auth to '%s'.\n" "$target"
+}
+
+cmd_remove() {
+  [[ $# -eq 1 ]] || die "remove requires a profile name"
+  local name="$1"
+  local path active_resolved path_resolved
+  validate_name "$name"
+  require_profile "$name"
+  path="$(profile_path "$name")"
+  active_resolved="$(resolved_path "$ACTIVE_AUTH")"
+  path_resolved="$(resolved_path "$path")"
+  if [[ -n "$active_resolved" && -n "$path_resolved" && "$active_resolved" == "$path_resolved" ]]; then
+    die "refusing to remove current auth profile '$name'; switch to another profile first"
+  fi
+
+  rm -- "$path"
+  printf "Removed Codex auth profile '%s'.\n" "$name"
+}
+
+main() {
+  local cmd="${1:-}"
+  if [[ -z "$cmd" || "$cmd" == "-h" || "$cmd" == "--help" ]]; then
+    usage
+    exit 0
+  fi
+  shift
+
+  case "$cmd" in
+    save) cmd_save "$@" ;;
+    list) [[ $# -eq 0 ]] || die "list does not take arguments"; cmd_list ;;
+    use) cmd_use "$@" ;;
+    next) [[ $# -eq 0 ]] || die "next does not take arguments"; cmd_next ;;
+    remove) cmd_remove "$@" ;;
+    *) usage >&2; die "unknown command '$cmd'" ;;
+  esac
+}
+
+main "$@"
