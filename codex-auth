@@ -8,6 +8,7 @@ ACTIVE_AUTH="$CODEX_HOME/auth.json"
 usage() {
   cat <<'EOF'
 Usage:
+  codex-auth add <name>     Log in to a new account, save it as <name>, and switch to it
   codex-auth save <name>    Save current auth as <name> and switch to it
   codex-auth list           List saved auth profiles, storage paths, and [current]
   codex-auth use <name>     Switch to saved auth profile <name>
@@ -85,6 +86,67 @@ switch_to_profile() {
 
   ln -s "auth.d/$name.json" "$tmp_link"
   mv -Tf "$tmp_link" "$ACTIVE_AUTH"
+}
+
+ADD_RESTORE_NEEDED=false
+ADD_RESTORE_LINK=""
+
+cleanup_add() {
+  local status=$?
+
+  if [[ "$ADD_RESTORE_NEEDED" == true ]]; then
+    if [[ -e "$ACTIVE_AUTH" && ! -L "$ACTIVE_AUTH" ]]; then
+      local failed_auth="$CODEX_HOME/auth.json.add-failed.$$.json"
+      mv -f -- "$ACTIVE_AUTH" "$failed_auth" || true
+      chmod 600 "$failed_auth" 2>/dev/null || true
+      printf "codex-auth: preserved incomplete new auth at %s\n" "$failed_auth" >&2
+    fi
+
+    if [[ ! -e "$ACTIVE_AUTH" && ! -L "$ACTIVE_AUTH" && -n "$ADD_RESTORE_LINK" ]]; then
+      ln -s "$ADD_RESTORE_LINK" "$ACTIVE_AUTH" || true
+      printf "codex-auth: restored previous auth profile link.\n" >&2
+    fi
+  fi
+
+  return "$status"
+}
+
+cmd_add() {
+  [[ $# -eq 1 ]] || die "add requires a profile name"
+  local name="$1"
+  local codex_bin="${CODEX_AUTH_CODEX:-codex}"
+  local dest tmp
+  validate_name "$name"
+  ensure_auth_dir
+  dest="$(profile_path "$name")"
+  [[ ! -e "$dest" ]] || die "saved auth profile '$name' already exists"
+  command -v "$codex_bin" >/dev/null 2>&1 || die "codex command '$codex_bin' was not found"
+
+  ADD_RESTORE_NEEDED=false
+  ADD_RESTORE_LINK=""
+
+  if [[ -e "$ACTIVE_AUTH" || -L "$ACTIVE_AUTH" ]]; then
+    if [[ ! -L "$ACTIVE_AUTH" ]]; then
+      die "auth.json is an unmanaged regular file; run 'codex-auth save <name>' before adding another account"
+    fi
+    current_profile >/dev/null || die "auth.json is a symlink, but not a managed profile"
+    ADD_RESTORE_LINK="$(readlink -- "$ACTIVE_AUTH")"
+    ADD_RESTORE_NEEDED=true
+    trap cleanup_add EXIT
+    rm -- "$ACTIVE_AUTH"
+  fi
+
+  "$codex_bin" login
+
+  [[ -f "$ACTIVE_AUTH" && ! -L "$ACTIVE_AUTH" ]] || die "codex login did not create a new regular auth.json"
+  tmp="$(mktemp "$AUTH_DIR/.$name.XXXXXX")"
+  cp -- "$ACTIVE_AUTH" "$tmp"
+  chmod 600 "$tmp"
+  mv -T "$tmp" "$dest"
+  ADD_RESTORE_NEEDED=false
+  trap - EXIT
+  switch_to_profile "$name"
+  printf "Added and switched Codex auth to '%s'.\n" "$name"
 }
 
 cmd_save() {
@@ -183,6 +245,7 @@ main() {
   shift
 
   case "$cmd" in
+    add) cmd_add "$@" ;;
     save) cmd_save "$@" ;;
     list) [[ $# -eq 0 ]] || die "list does not take arguments"; cmd_list ;;
     use) cmd_use "$@" ;;

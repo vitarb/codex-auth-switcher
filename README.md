@@ -20,6 +20,7 @@ Make sure `~/.local/bin` is on your shell `PATH`.
 ## Usage
 
 ```bash
+codex-auth add <name>     # log in to a new account, save it, and switch to it
 codex-auth save <name>    # save current auth.json as a profile and switch to it
 codex-auth list           # list saved profiles, storage paths, and [current]
 codex-auth use <name>     # switch to a saved profile
@@ -36,9 +37,7 @@ codex-auth save primary
 Add a second account:
 
 ```bash
-codex logout
-codex login
-codex-auth save secondary
+codex-auth add secondary
 ```
 
 Toggle accounts:
@@ -53,6 +52,10 @@ codex-auth next
   under multiple names creates independent copies.
 - `use` and `next` refuse to overwrite an unmanaged regular `auth.json`. Run
   `codex-auth save <name>` first so the current credentials are preserved.
+- `add` temporarily removes the managed `auth.json` symlink before running
+  `codex login`, then imports the new regular `auth.json` as the requested
+  profile. If login fails or is cancelled, the previous profile link is
+  restored.
 - `remove` refuses to remove the profile that is currently linked as
   `auth.json`.
 - Running Codex sessions keep their in-process auth snapshot. Switch profiles
