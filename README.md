@@ -25,6 +25,7 @@ codex-auth save <name>    # save current auth.json as a profile and switch to it
 codex-auth list           # list saved profiles, storage paths, and [current]
 codex-auth use <name>     # switch to a saved profile
 codex-auth next           # switch to the next saved profile in sorted order
+codex-auth export-current <path>  # export the current profile as a direct file
 codex-auth remove <name>  # remove a saved profile, refusing if it is current
 ```
 
@@ -46,6 +47,17 @@ Toggle accounts:
 codex-auth next
 ```
 
+Export the selected profile for a service that requires a direct credential
+file rather than the interactive CLI's managed symlink:
+
+```bash
+codex-auth export-current \
+  "$HOME/.local/state/checkpoint-meridian-runtime/codex-subscription/auth.json"
+```
+
+Export is explicit: switching profiles does not silently update service
+credentials or restart any service.
+
 ## Safety
 
 - `save` dereferences the current `auth.json`, so saving the same active auth
@@ -58,6 +70,10 @@ codex-auth next
   restored.
 - `remove` refuses to remove the profile that is currently linked as
   `auth.json`.
+- `export-current` copies the selected managed profile to an absolute path by
+  atomic replacement. It requires direct mode-0600 source and destination
+  files inside an existing, direct, current-user-owned mode-0700 directory;
+  symlink destinations and symlinked parent paths are rejected.
 - Running Codex sessions keep their in-process auth snapshot. Switch profiles
   before starting a new Codex session.
 

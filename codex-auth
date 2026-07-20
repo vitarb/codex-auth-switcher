@@ -13,6 +13,8 @@ Usage:
   codex-auth list           List saved auth profiles, storage paths, and [current]
   codex-auth use <name>     Switch to saved auth profile <name>
   codex-auth next           Switch to the next saved auth profile
+  codex-auth export-current <path>
+                            Atomically export the current profile as a direct file
   codex-auth remove <name>  Remove a saved auth profile, refusing if current
 EOF
 }
@@ -219,6 +221,41 @@ cmd_next() {
   printf "Switched Codex auth to '%s'.\n" "$target"
 }
 
+cmd_export_current() {
+  [[ $# -eq 1 ]] || die "export-current requires an absolute destination path"
+  local destination="$1"
+  [[ "$destination" == /* ]] || die "export destination must be an absolute path"
+
+  local profile source parent canonical_parent temporary=""
+  profile="$(current_profile || true)"
+  [[ -n "$profile" ]] || die "auth.json is not linked to a managed profile"
+  source="$(profile_path "$profile")"
+  [[ -f "$source" && ! -L "$source" ]] || die "current profile is not a direct regular file"
+  [[ "$(stat -c %u -- "$source")" == "$(id -u)" ]] || die "current profile is not owned by the current user"
+  [[ "$(stat -c %a -- "$source")" == "600" ]] || die "current profile must have mode 600"
+
+  parent="$(dirname -- "$destination")"
+  [[ -d "$parent" && ! -L "$parent" ]] || die "export destination parent must be a direct directory"
+  canonical_parent="$(readlink -f -- "$parent" 2>/dev/null || true)"
+  [[ -n "$canonical_parent" && "$canonical_parent" == "$parent" ]] || die "export destination parent must be a canonical path without symlink traversal"
+  [[ "$(stat -c %u -- "$parent")" == "$(id -u)" ]] || die "export destination parent is not owned by the current user"
+  [[ "$(stat -c %a -- "$parent")" == "700" ]] || die "export destination parent must have mode 700"
+
+  if [[ -e "$destination" || -L "$destination" ]]; then
+    [[ -f "$destination" && ! -L "$destination" ]] || die "existing export destination must be a direct regular file"
+    [[ "$(stat -c %u -- "$destination")" == "$(id -u)" ]] || die "existing export destination is not owned by the current user"
+    [[ "$(stat -c %a -- "$destination")" == "600" ]] || die "existing export destination must have mode 600"
+  fi
+
+  temporary="$(mktemp "$parent/.codex-auth-export.XXXXXX")"
+  if ! install -m 600 -- "$source" "$temporary" || ! mv -Tf -- "$temporary" "$destination"; then
+    rm -f -- "$temporary"
+    die "failed to export current auth profile"
+  fi
+
+  printf "Exported current Codex auth profile '%s' to %s.\n" "$profile" "$destination"
+}
+
 cmd_remove() {
   [[ $# -eq 1 ]] || die "remove requires a profile name"
   local name="$1"
@@ -250,6 +287,7 @@ main() {
     list) [[ $# -eq 0 ]] || die "list does not take arguments"; cmd_list ;;
     use) cmd_use "$@" ;;
     next) [[ $# -eq 0 ]] || die "next does not take arguments"; cmd_next ;;
+    export-current) cmd_export_current "$@" ;;
     remove) cmd_remove "$@" ;;
     *) usage >&2; die "unknown command '$cmd'" ;;
   esac

@@ -78,6 +78,58 @@ fi
 "$codex_auth" use foo >/tmp/codex-auth-test.out
 [[ "$(readlink "$CODEX_HOME/auth.json")" == 'auth.d/foo.json' ]]
 
+export_dir="$tmp/export"
+mkdir -m 700 "$export_dir"
+exported_auth="$export_dir/auth.json"
+"$codex_auth" export-current "$exported_auth" >/tmp/codex-auth-test.out
+[[ -f "$exported_auth" && ! -L "$exported_auth" ]]
+[[ "$(stat -c %a "$exported_auth")" == '600' ]]
+cmp "$CODEX_HOME/auth.d/foo.json" "$exported_auth"
+[[ "$(readlink "$CODEX_HOME/auth.json")" == 'auth.d/foo.json' ]]
+
+printf '{"old":true}\n' > "$exported_auth"
+chmod 600 "$exported_auth"
+old_export_inode="$(stat -c %i "$exported_auth")"
+"$codex_auth" export-current "$exported_auth" >/tmp/codex-auth-test.out
+cmp "$CODEX_HOME/auth.d/foo.json" "$exported_auth"
+[[ "$(stat -c %i "$exported_auth")" != "$old_export_inode" ]]
+
+if "$codex_auth" export-current 'relative/auth.json' >/tmp/codex-auth-test.out 2>/tmp/codex-auth-test.err; then
+  echo 'expected relative export destination to fail' >&2
+  exit 1
+fi
+
+unsafe_export_dir="$tmp/unsafe-export"
+mkdir -m 755 "$unsafe_export_dir"
+if "$codex_auth" export-current "$unsafe_export_dir/auth.json" >/tmp/codex-auth-test.out 2>/tmp/codex-auth-test.err; then
+  echo 'expected export to mode-755 parent to fail' >&2
+  exit 1
+fi
+
+ln -s "$export_dir" "$tmp/export-link"
+if "$codex_auth" export-current "$tmp/export-link/via-parent.json" >/tmp/codex-auth-test.out 2>/tmp/codex-auth-test.err; then
+  echo 'expected export through symlinked parent to fail' >&2
+  exit 1
+fi
+
+symlink_target="$export_dir/symlink-target.json"
+printf '{"preserve":true}\n' > "$symlink_target"
+chmod 600 "$symlink_target"
+ln -s "$(basename "$symlink_target")" "$export_dir/symlink-auth.json"
+if "$codex_auth" export-current "$export_dir/symlink-auth.json" >/tmp/codex-auth-test.out 2>/tmp/codex-auth-test.err; then
+  echo 'expected export to symlink destination to fail' >&2
+  exit 1
+fi
+grep -q '"preserve":true' "$symlink_target"
+[[ "$(readlink "$CODEX_HOME/auth.json")" == 'auth.d/foo.json' ]]
+
+chmod 644 "$CODEX_HOME/auth.d/foo.json"
+if "$codex_auth" export-current "$export_dir/source-mode.json" >/tmp/codex-auth-test.out 2>/tmp/codex-auth-test.err; then
+  echo 'expected export from mode-644 profile to fail' >&2
+  exit 1
+fi
+chmod 600 "$CODEX_HOME/auth.d/foo.json"
+
 "$codex_auth" remove baz >/tmp/codex-auth-test.out
 [[ ! -e "$CODEX_HOME/auth.d/baz.json" ]]
 
